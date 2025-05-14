@@ -2,11 +2,15 @@ import logging
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.types import Message
+from aiogram.types import InputFile
 from aiogram.fsm.storage.memory import MemoryStorage
 import asyncio
 import yt_dlp
 import os
 from aiogram.client.default import DefaultBotProperties
+
+video = InputFile(video_file)
+await message.reply_video(video)
 
 
 TOKEN = os.getenv("BOT_TOKEN")
