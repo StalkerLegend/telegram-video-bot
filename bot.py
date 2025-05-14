@@ -41,8 +41,8 @@ YDL_OPTS = {
 async def cmd_start(message: Message):
     await message.reply(
         "👋 Привет! Я скачиваю видео из YouTube, TikTok, Instagram и Pinterest.\n"
-        "Просто отправь ссылку.\n"
-        "⚠️ Максимум 50 МБ для отправки в чат — если больше, дам прямую ссылку."
+        "Просто отправь мне ссылку.\n"
+        "⚠️ Максимум 50 МБ для отправки в чат — если файл больше, дам прямую ссылку."
     )
 
 @dp.message()
@@ -55,15 +55,51 @@ async def download_handler(message: Message):
     filename = None
 
     try:
+        # 1) Скачиваем видео
         with YoutubeDL(YDL_OPTS) as ydl:
             info = ydl.extract_info(url, download=True)
             filename = ydl.prepare_filename(info)
 
+        # 2) Проверяем размер
         size = os.path.getsize(filename)
         if size <= 50 * 1024 * 1024:
             video = InputFile(path_or_bytesio=filename)
             await message.reply_video(video)
         else:
-            public_url = WEBHOOK_URL.rsplit("/webhook", 1)[0] + f"/{os.path.basename(filename)}"
+            # Если больше 50 МБ — даём прямую ссылку
+            base_url = WEBHOOK_URL.rsplit("/webhook", 1)[0]
+            public_url = f"{base_url}/{os.path.basename(filename)}"
             await message.reply(
-                f"✅ Видео скачано ({size//
+                f"✅ Видео скачано ({size // 1024**2} МБ), но оно слишком большое для Telegram.\n"
+                f"Скачайте его здесь:\n{public_url}"
+            )
+    except Exception as e:
+        logging.exception("Ошибка при загрузке/отправке видео")
+        await message.reply(f"❌ Произошла ошибка:\n{e}")
+    finally:
+        # 3) Удаляем файл
+        if filename and os.path.exists(filename):
+            try:
+                os.remove(filename)
+            except:
+                pass
+
+async def on_startup():
+    await bot.set_webhook(WEBHOOK_URL)
+
+async def on_shutdown():
+    await bot.delete_webhook()
+    await bot.session.close()
+
+if __name__ == "__main__":
+    # создаём aiohttp-приложение
+    app = web.Application()
+    # регистрируем webhook-обработчик
+    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/webhook")
+    app.on_startup.append(lambda _: asyncio.create_task(on_startup()))
+    app.on_shutdown.append(lambda _: asyncio.create_task(on_shutdown()))
+    # раздаём скачанные файлы по HTTP
+    app.router.add_static("/", DOWNLOADS, show_index=True)
+
+    logging.info(f"🚀 Запуск на порту {PORT}")
+    web.run_app(app, host="0.0.0.0", port=PORT)
