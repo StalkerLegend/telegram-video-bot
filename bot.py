@@ -67,7 +67,7 @@ async def download_handler(message: Message):
     filename = None
 
     try:
-        # DEBUG: проверка метаданных (можно удалить после успешного теста)
+        # DEBUG: проверка метаданных
         info = await asyncio.to_thread(
             lambda: YoutubeDL({**YDL_OPTS, "skip_download": True}).extract_info(url, download=False)
         )
@@ -84,11 +84,9 @@ async def download_handler(message: Message):
         size = os.path.getsize(filename)
         logging.info(f"Downloaded {filename}, size={size} bytes")
 
-        # Отправка в чат или выдача ссылки
         if size <= 50 * 1024 * 1024:
             await message.reply_video(FSInputFile(filename))
         else:
-            # публичный URL для больших файлов
             base = f"https://{os.getenv('RENDER_SERVICE_NAME')}.onrender.com"
             public = f"{base}/{os.path.basename(filename)}"
             await message.reply(
@@ -132,7 +130,9 @@ async def init_http():
 
 # ——————————————————————————————————————————————
 async def main():
-    # старт HTTP и Polling параллельно
+    # сбрасываем любые webhook от предыдущих запусков
+    await bot.delete_webhook(drop_pending_updates=True)
+    # старт HTTP и polling параллельно
     await init_http()
     await dp.start_polling(bot, skip_updates=True)
 
