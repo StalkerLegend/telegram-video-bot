@@ -68,7 +68,6 @@ async def download_handler(message: Message):
         if size <= 50 * 1024 * 1024:
             await message.reply_video(FSInputFile(filename))
         else:
-            # Адрес для прямой загрузки через aiohttp
             public = f"https://{os.getenv('RENDER_SERVICE_NAME')}.onrender.com/{os.path.basename(filename)}"
             await message.reply(
                 f"✅ Скачано ({size//1024**2} МБ), но файл большой для Telegram.\n"
@@ -83,7 +82,6 @@ async def download_handler(message: Message):
             os.remove(filename)
 
 # ——————————————————————————————————————————————
-# HTTP-приложение для Render: health-check и отдача скачанных файлов
 async def init_http_server():
     app = web.Application()
     async def health(request): return web.Response(text="OK")
@@ -98,10 +96,12 @@ async def init_http_server():
 
 # ——————————————————————————————————————————————
 async def main():
-    # 1) Старт HTTP-сервера
+    # 1) Удаляем старый webhook
+    await bot.delete_webhook(drop_pending_updates=True)
+    # 2) Запускаем HTTP-сервер
     await init_http_server()
-    # 2) Старт long-polling бота
-    await dp.start_polling(bot, skip_updates=True)
+    # 3) Запускаем polling
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
