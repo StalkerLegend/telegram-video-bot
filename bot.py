@@ -11,66 +11,79 @@ from yt_dlp import YoutubeDL
 
 logging.basicConfig(level=logging.INFO)
 
+# Переменные окружения
 BOT_TOKEN   = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT        = int(os.getenv("PORT", 8443))
 DOWNLOADS   = "downloads"
 
 if not BOT_TOKEN or not WEBHOOK_URL:
-    logging.error("❌ Задайте в ENV BOT_TOKEN и WEBHOOK_URL!")
+    logging.error("❌ Задайте BOT_TOKEN и WEBHOOK_URL!")
     exit(1)
 
+# Инициализация бота и диспетчера
 bot = Bot(token=BOT_TOKEN)
 dp  = Dispatcher()
 os.makedirs(DOWNLOADS, exist_ok=True)
 
+# Настройки yt-dlp без вывода прогресса
 YDL_OPTS = {
-    "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+    "format": "bestvideo+ bestaudio/best",
     "outtmpl": f"{DOWNLOADS}/%(title).50s.%(ext)s",
     "noplaylist": True,
     "quiet": True,
+    "no_warnings": True,
+    "logger": logging.getLogger("yt-dlp"),
 }
 
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     await message.reply(
-        "👋 Привет! Я скачиваю видео из YouTube, TikTok, Instagram и Pinterest.\n"
-        "Просто отправь мне ссылку.\n"
-        "⚠️ Максимум 50 МБ для отправки в чат — если файл больше, дам прямую ссылку."
+        "👋 Я бот для скачивания видео из YouTube, TikTok, Instagram и Pinterest.\n"
+        "Отправь ссылку, и я пришлю готовый файл (до 50 МБ) или ссылку на скачивание."
     )
 
 @dp.message()
 async def download_handler(message: Message):
     url = message.text.strip()
     if not url.startswith("http"):
-        return await message.reply("❗ Пожалуйста, отправь корректную ссылку.")
+        return await message.reply("❗ Пожалуйста, отправь корректную ссылку!")
 
-    await message.reply("⏳ Скачиваю…")
+    status_msg = await message.reply("⏳ Скачиваю видео… Это может занять до минуты.")
+
     filename = None
-
     try:
-        with YoutubeDL(YDL_OPTS) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
+        # Вынесем тяжёлую работу в отдельный поток
+        def download():
+            with YoutubeDL(YDL_OPTS) as ydl:
+                info = ydl.extract_info(url, download=True)
+                return ydl.prepare_filename(info)
 
+        filename = await asyncio.to_thread(download)
         size = os.path.getsize(filename)
+        logging.info(f"Downloaded {filename}, size={size} bytes")
+
         if size <= 50 * 1024 * 1024:
             video = FSInputFile(filename)
             await message.reply_video(video)
         else:
-            base_url = WEBHOOK_URL.rsplit("/webhook", 1)[0]
-            public_url = f"{base_url}/{os.path.basename(filename)}"
+            base = WEBHOOK_URL.rsplit("/webhook", 1)[0]
+            public = f"{base}/{os.path.basename(filename)}"
             await message.reply(
-                f"✅ Видео скачано ({size // 1024**2} МБ), но оно слишком большое для Telegram.\n"
-                f"Скачайте его здесь:\n{public_url}"
+                f"✅ Видео ({size//1024**2} МБ) скачано, но Telegram не примет такой объём.\n"
+                f"Скачать можно здесь:\n{public}"
             )
+
     except Exception as e:
-        logging.exception("Ошибка при загрузке/отправке видео")
-        await message.reply(f"❌ Произошла ошибка:\n{e}")
+        logging.exception("Ошибка при скачивании/отправке видео")
+        await message.reply(f"❌ Не удалось скачать видео:\n`{e}`", parse_mode="Markdown")
     finally:
+        # удаляем локальный файл
         if filename and os.path.exists(filename):
             try: os.remove(filename)
             except: pass
+        # удаляем «Скачиваю…» сообщение
+        await status_msg.delete()
 
 async def on_startup():
     await bot.set_webhook(WEBHOOK_URL)
