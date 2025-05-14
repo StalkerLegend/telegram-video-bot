@@ -6,31 +6,24 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.types import Message, FSInputFile
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 from yt_dlp import YoutubeDL
 
 logging.basicConfig(level=logging.INFO)
 
-# ——————————————————————————————————————————————
-# 1) Получаем обязательные переменные окружения
-BOT_TOKEN   = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")   # https://<your-service>.onrender.com/webhook
-PORT        = int(os.getenv("PORT", "8000"))  # Render всегда задаёт PORT
-DOWNLOADS   = "downloads"
+# ENV
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+PORT      = int(os.getenv("PORT", "8000"))
+DOWNLOADS = "downloads"
 
-if not BOT_TOKEN or not WEBHOOK_URL:
-    logging.error("❌ Не заданы BOT_TOKEN или WEBHOOK_URL в ENV")
+if not BOT_TOKEN:
+    logging.error("❌ Не задан BOT_TOKEN")
     exit(1)
 
-# ——————————————————————————————————————————————
-# 2) Инициализация бота и диспетчера
+# Инициализация
 bot = Bot(token=BOT_TOKEN)
 dp  = Dispatcher()
-
-# 3) Папка для скачивания
 os.makedirs(DOWNLOADS, exist_ok=True)
 
-# 4) Настройки yt-dlp (без вывода прогресса)
 YDL_OPTS = {
     "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
     "outtmpl": f"{DOWNLOADS}/%(title).50s.%(ext)s",
@@ -40,26 +33,24 @@ YDL_OPTS = {
     "logger": logging.getLogger("yt-dlp"),
 }
 
-# ——————————————————————————————————————————————
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     await message.reply(
-        "👋 Привет! Я бот, скачиваю видео из YouTube, TikTok, Instagram, Pinterest.\n"
-        "Просто отправь ссылку. Максимум 50 МБ для отправки в чат,\n"
-        "если больше — дам прямую ссылку на скачивание."
+        "👋 Я бот-скачалка видео (YouTube, TikTok, Insta, Pinterest).\n"
+        "Отправь ссылку. Если видео ≤50 МБ — пришлю файл, иначе — ссылку."
     )
 
 @dp.message()
 async def download_handler(message: Message):
     url = message.text.strip()
     if not url.startswith("http"):
-        return await message.reply("❗ Отправь, пожалуйста, **корректную** ссылку.")
+        return await message.reply("❗ Отправь, пожалуйста, ссылку на видео.")
 
-    status = await message.reply("⏳ Скачиваю… это может занять до минуты")
+    status = await message.reply("⏳ Скачиваю… подожди минутку")
     filename = None
 
     try:
-        # heavy IO in thread
+        # heavy work in thread
         def yt_download():
             with YoutubeDL(YDL_OPTS) as ydl:
                 info = ydl.extract_info(url, download=True)
@@ -67,46 +58,38 @@ async def download_handler(message: Message):
 
         filename = await asyncio.to_thread(yt_download)
         size = os.path.getsize(filename)
-        logging.info(f"Downloaded {filename} ({size} bytes)")
+        logging.info(f"Downloaded {filename}, size={size}")
 
         if size <= 50 * 1024 * 1024:
-            video = FSInputFile(filename)
-            await message.reply_video(video)
+            await message.reply_video(FSInputFile(filename))
         else:
-            base = WEBHOOK_URL.rsplit("/webhook", 1)[0]
-            public_url = f"{base}/{os.path.basename(filename)}"
+            public = f"https://{os.getenv('RENDER_SERVICE_NAME')}.onrender.com/{os.path.basename(filename)}"
             await message.reply(
-                f"✅ Видео скачано ({size//1024**2} МБ), но слишком большое для Telegram.\n"
-                f"Скачать можно здесь:\n{public_url}"
+                f"✅ Скачано ({size//1024**2} МБ), слишком большой файл.\n"
+                f"Скачать тут:\n{public}"
             )
     except Exception as e:
-        logging.exception("Ошибка при скачивании/отправке")
+        logging.exception("Ошибка при скачивании")
         await message.reply(f"❌ Ошибка:\n`{e}`", parse_mode="Markdown")
     finally:
-        # удаляем статус и файл
         await status.delete()
         if filename and os.path.exists(filename):
-            try: os.remove(filename)
-            except: pass
+            os.remove(filename)
 
-# ——————————————————————————————————————————————
-async def on_startup():
-    logging.info("▶️ Регистрирую webhook")
-    await bot.set_webhook(WEBHOOK_URL)
+async def start_polling():
+    await dp.start_polling(bot, skip_updates=True)
 
-async def on_shutdown():
-    logging.info("🛑 Удаляю webhook")
-    await bot.delete_webhook()
-    await bot.session.close()
-
-# ——————————————————————————————————————————————
 if __name__ == "__main__":
+    # 1) aiohttp для Render
     app = web.Application()
-    SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/webhook")
-    app.on_startup.append(lambda _: asyncio.create_task(on_startup()))
-    app.on_shutdown.append(lambda _: asyncio.create_task(on_shutdown()))
-    # Статические файлы для больших видео
+    # простой health-check
+    async def ping(request): return web.Response(text="OK")
+    app.add_routes([web.get("/", ping)])
+    # отдача статики
     app.router.add_static("/", DOWNLOADS, show_index=True)
 
-    logging.info(f"🚀 Слушаю порт {PORT}")
+    # 2) Запускаем polling и HTTP-сервер параллельно
+    loop = asyncio.get_event_loop()
+    loop.create_task(start_polling())
+    logging.info(f"🚀 Запуск HTTP на порту {PORT} и polling")
     web.run_app(app, host="0.0.0.0", port=PORT)
