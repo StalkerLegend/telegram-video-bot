@@ -12,6 +12,4 @@ services:
         sync: false
       - key: WEBHOOK_URL
         sync: false
-      - key: PORT
-        value: "8443"
-        sync: false
+      # УБИРАЕМ ручную установку PORT, Render сам передаст свою переменную
