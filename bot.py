@@ -1,38 +1,46 @@
-import os
+import logging
 from aiogram import Bot, Dispatcher, types
-from aiogram.utils import executor
+from aiogram.enums import ParseMode
+from aiogram.types import Message
+from aiogram.fsm.storage.memory import MemoryStorage
+import asyncio
 import yt_dlp
+import os
 
-BOT_TOKEN = os.getenv('BOT_TOKEN')
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot)
+TOKEN = os.getenv("BOT_TOKEN")
 
-@dp.message_handler(commands=['start'])
-async def start(message: types.Message):
-    await message.answer("Привет! Отправь ссылку на видео из YouTube, TikTok или Instagram.")
+bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
+dp = Dispatcher(storage=MemoryStorage())
 
-@dp.message_handler()
-async def download(message: types.Message):
+@dp.message()
+async def download_video(message: Message):
     url = message.text.strip()
-    await message.answer("Скачиваю видео...")
+    if not url.startswith("http"):
+        await message.reply("Пожалуйста, отправь ссылку на видео.")
+        return
+
+    await message.reply("⏳ Скачиваю видео...")
 
     ydl_opts = {
-        'outtmpl': '%(title).30s.%(ext)s',
-        'format': 'mp4/best',
+        'outtmpl': 'video.%(ext)s',
+        'format': 'mp4',
+        'quiet': True
     }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
-
-        with open(filename, 'rb') as f:
-            await message.reply_video(f)
-
-        os.remove(filename)
+            video_file = ydl.prepare_filename(info)
+        
+        await message.reply_video(open(video_file, 'rb'))
+        os.remove(video_file)
 
     except Exception as e:
-        await message.answer(f"Ошибка: {e}")
+        await message.reply(f"⚠️ Ошибка: {str(e)}")
 
-if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)
+async def main():
+    logging.basicConfig(level=logging.INFO)
+    await dp.start_polling(bot)
+
+if __name__ == '__main__':
+    asyncio.run(main())
