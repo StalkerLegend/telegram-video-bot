@@ -1,5 +1,5 @@
 services:
-  - type: worker
+  - type: web
     name: telegram-video-bot
     env: python
     plan: free
@@ -7,4 +7,7 @@ services:
     startCommand: python bot.py
     envVars:
       - key: BOT_TOKEN
+        sync: false
+      - key: WEBHOOK_URL
+        value: https://<your-service>.onrender.com
         sync: false
