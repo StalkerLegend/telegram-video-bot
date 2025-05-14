@@ -7,6 +7,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
 from aiogram.types import Message, FSInputFile
 from yt_dlp import YoutubeDL
+from yt_dlp.utils import DownloadError, ExtractorError
 
 logging.basicConfig(level=logging.INFO)
 
@@ -28,11 +29,16 @@ dp  = Dispatcher()
 # 3) Папка для скачивания
 os.makedirs(DOWNLOADS, exist_ok=True)
 
-# 4) Опции yt-dlp (выключаем всё лишнее)
+# 4) Опции yt-dlp с обходом региональных ограничений и корректным UA
 YDL_OPTS = {
-    "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+    "format": "bestvideo+bestaudio/best",
     "outtmpl": f"{DOWNLOADS}/%(title).50s.%(ext)s",
     "noplaylist": True,
+    "geo_bypass": True,
+    "nocheckcertificate": True,
+    "http_headers": {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    },
     "quiet": True,
     "no_warnings": True,
     "logger": logging.getLogger("yt-dlp"),
@@ -50,44 +56,72 @@ async def cmd_start(message: Message):
 async def download_handler(message: Message):
     url = message.text.strip()
     if not url.startswith("http"):
-        return await message.reply("❗ Отправь, пожалуйста, правильную ссылку.")
+        return await message.reply("❗ Пожалуйста, отправь корректную ссылку.")
 
-    status = await message.reply("⏳ Скачиваю… подожди минуту")
+    # Преобразование YouTube Shorts в обычный URL
+    if "youtube.com/shorts/" in url:
+        video_id = url.rstrip("/").split("/")[-1]
+        url = f"https://www.youtube.com/watch?v={video_id}"
+
+    status = await message.reply("⏳ Проверяю и скачиваю… это может занять минуту")
     filename = None
 
     try:
+        # DEBUG: проверка метаданных (можно удалить после успешного теста)
+        info = await asyncio.to_thread(
+            lambda: YoutubeDL({**YDL_OPTS, "skip_download": True}).extract_info(url, download=False)
+        )
+        logging.info(f"YT-DLP info: title={info.get('title')}, formats={len(info.get('formats', []))}")
+
+        # Функция для реального скачивания
         def yt_download():
             with YoutubeDL(YDL_OPTS) as ydl:
-                info = ydl.extract_info(url, download=True)
-                return ydl.prepare_filename(info)
+                data = ydl.extract_info(url, download=True)
+                return ydl.prepare_filename(data)
 
+        # Запуск в отдельном потоке
         filename = await asyncio.to_thread(yt_download)
         size = os.path.getsize(filename)
-        logging.info(f"Downloaded {filename}, size={size}")
+        logging.info(f"Downloaded {filename}, size={size} bytes")
 
+        # Отправка в чат или выдача ссылки
         if size <= 50 * 1024 * 1024:
             await message.reply_video(FSInputFile(filename))
         else:
-            # Адрес для прямой загрузки через aiohttp
-            public = f"https://{os.getenv('RENDER_SERVICE_NAME')}.onrender.com/{os.path.basename(filename)}"
+            # публичный URL для больших файлов
+            base = f"https://{os.getenv('RENDER_SERVICE_NAME')}.onrender.com"
+            public = f"{base}/{os.path.basename(filename)}"
             await message.reply(
-                f"✅ Скачано ({size//1024**2} МБ), но файл большой для Telegram.\n"
-                f"Скачать можно здесь:\n{public}"
+                f"✅ Скачано ({size//1024**2} МБ), но слишком большой файл для Telegram.\n"
+                f"Скачать здесь:\n{public}"
             )
+
+    except DownloadError:
+        logging.warning("Видео недоступно (DownloadError).")
+        await message.reply("⚠️ К сожалению, это видео недоступно для скачивания.")
+    except ExtractorError:
+        logging.warning("Ошибка извлечения форматов (ExtractorError).")
+        await message.reply("❗ Не удалось извлечь информацию о видео. Проверь ссылку.")
     except Exception as e:
-        logging.exception("Ошибка при скачивании")
-        await message.reply(f"❌ Не удалось скачать видео:\n`{e}`", parse_mode="Markdown")
+        logging.exception("Ошибка при загрузке/отправке видео:")
+        await message.reply(f"❌ Произошла ошибка:\n`{e}`", parse_mode="Markdown")
     finally:
+        # удаляем статус и временный файл
         await status.delete()
         if filename and os.path.exists(filename):
-            os.remove(filename)
+            try:
+                os.remove(filename)
+            except:
+                pass
 
 # ——————————————————————————————————————————————
-# HTTP-приложение для Render: health-check и отдача скачанных файлов
-async def init_http_server():
+async def init_http():
     app = web.Application()
-    async def health(request): return web.Response(text="OK")
+    # health-check
+    async def health(request):
+        return web.Response(text="OK")
     app.router.add_get("/", health)
+    # отдаём скачанные файлы
     app.router.add_static("/", DOWNLOADS, show_index=True)
 
     runner = web.AppRunner(app)
@@ -98,9 +132,8 @@ async def init_http_server():
 
 # ——————————————————————————————————————————————
 async def main():
-    # 1) Старт HTTP-сервера
-    await init_http_server()
-    # 2) Старт long-polling бота
+    # старт HTTP и Polling параллельно
+    await init_http()
     await dp.start_polling(bot, skip_updates=True)
 
 if __name__ == "__main__":
